@@ -1,0 +1,124 @@
+---
+title: "HAR_PML"
+author: "Daniel Hammarström"
+date: "24. april 2015"
+output: html_document
+---
+## Introduction
+The aim of the current report is to explore and create a prediction model based on accelerometer data from a weight lifting exercise. Participants has been asked to perform unilateral dumbbel biceps-curls in different manners out of one was considered correct [[1]](http://groupware.les.inf.puc-rio.br/har). The aim of the prediction model is to differentiate between the types of performance. Two models was built and selected based on accuracy in a cross-validation. The final model used for the testing dataset was based on unprocessed number in 52 variables.
+
+## Loading data and selecting variables
+The raw data, already divided in a training- and testing-set was downloaded and loaded into R. 
+```{r downloadData, cache=TRUE, warning=FALSE, message=FALSE}
+dir.create("./data")
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "./data/training.csv")
+
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile="./data/testing.csv")
+
+trainData<-read.csv("./data/training.csv")
+testData<-read.csv("./data/testing.csv")
+```
+
+After inspecting the dataset, columns with non-numeric, missing  and timestamp data was excluded. This resulted in a 'excludeColumns' vector to be used in the building of the prediction model. 
+
+```{r tidyData, warning=FALSE}
+excludeColumns<-c(1:7,12:36,50:59,69:83,87:101,103:112,125:139,141:150)
+training<-trainData[,-excludeColumns]
+
+
+# create a variable name vector and a sensor name vetor 
+variables<-names(training)[-53]
+sensor<-rep(NA, length(variables))
+
+# using grep to extract sensor placement
+sensor[grep("belt", variables)]<-"belt"
+sensor[grep("arm", variables)]<-"arm"
+sensor[grep("forearm", variables)]<-"forearm"
+sensor[grep("dumbbell", variables)]<-"dumbbell"
+
+# creating a frequency table with sensor placements
+table(sensor)
+```
+
+The dataset that was used consisted of `r table(sensor)[[1]]` variables per sensor placement after dataset "cleaning".  
+
+## Creating a prediction model predicting
+
+The numbers of predictors are still very large (n=`r length(variables)`). To reduce this number a principal componenet analysis (PCA) was performed prior to applying the learning algorithm. Since PCA might negatively affect the model, the learning algorithm was also applied on the raw data. To compare the approaches and estimate the out-of-sample error rate cross-validation was performed using a subset of the training data. The cross-validation (cv) subset was created with data partition in the caret package. 
+
+```{r cross-validationData, warning=FALSE, message=FALSE}
+library(caret)
+set.seed(1)
+trainIndex <- createDataPartition(y=training$classe,
+                               p=0.75, list=F)
+cv <- training[-trainIndex,]
+training <- training[trainIndex,]
+```
+
+The Random Forest approach was selected as learning algorithm.
+
+```{r predict, warning=FALSE, message=FALSE}
+library(randomForest)
+preProc<-preProcess(training[,-53], method="pca", thresh=0.90) # PCA on traning data
+tr.pc<-predict(preProc, training[,-53]) # creating a new data frame based on PCA
+cv.pc<-predict(preProc, cv[,-53]) # PCA on cv data
+
+
+modPC<-randomForest(y=training$classe, x=tr.pc, # creating the prediction model 
+                    do.trace=FALSE, ntree = 100) # setting the numbers of trees to 100
+
+pred<-predict(modPC, cv.pc) # predicting with the model
+
+cv.pc$classe<-cv$classe
+confMatPC <- confusionMatrix(pred, cv.pc$classe) # creating a confusion matrix
+
+
+# non PCA model
+modelFit <- randomForest(y=training$classe, x=training[,-53], # fitting the model
+                         do.trace=FALSE, ntree = 100) # number of trees set to 100
+
+pred<-predict(modelFit, cv) # predicting on the cv data set
+confMat <- confusionMatrix(pred, cv$classe) # creating a confusion matrix
+
+
+modelPerformance<-data.frame(Model=c("rf.PCA", "rf"), Accuracy=rep(NA,2), AccuracyLower=rep(NA,2),
+                             AccuracyUpper=rep(NA,2))
+
+modelPerformance[1,2]<-confMatPC$overall[1]
+modelPerformance[1,3]<-confMatPC$overall[3]
+modelPerformance[1,4]<-confMatPC$overall[4]
+
+modelPerformance[2,2]<-confMat$overall[1]
+modelPerformance[2,3]<-confMat$overall[3]
+modelPerformance[2,4]<-confMat$overall[4]
+
+
+library(ggplot2)
+
+plot<-ggplot(aes(Model, Accuracy, color=Model),data=modelPerformance)+
+      geom_point()+geom_errorbar(aes(ymin=AccuracyLower, ymax=AccuracyUpper,width=.25))
+
+```
+
+```{r plot, echo=FALSE}
+plot
+```
+
+The higher accuracy in the non-PCA in the CV data set suggests that it will perform better on out of sample data. The accuracy for the best model was `r round(modelPerformance[2,2],3)` (CI:`r round(modelPerformance[2,3],3)`-`r round(modelPerformance[2,4],3)`) suggesting a low (`r round(1-modelPerformance[2,2],3)`) out-of-sample error. Subsequently, the model based on the raw data was used for predicting on the testing data set.
+
+Comparing the two models on the testing data set generated the following:
+
+```{r predictions, results='asis'}
+testing<-testData[,-excludeColumns]
+Pred.rawModel<-as.character(predict(modelFit, testing[,-53]))
+
+testing.pc<-predict(preProc, testing[,-53])
+Pred.pcaModel<-as.character(predict(modPC, testing.pc))
+
+pr<-data.frame(Problem.id=seq(1:20), Pred.rawModel, Pred.pcaModel, equal=Pred.rawModel==Pred.pcaModel)
+
+library(knitr)
+kable(pr)
+``` 
+
+The models gave similar results on the testing data set.
